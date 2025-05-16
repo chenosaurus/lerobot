@@ -23,9 +23,15 @@ import logging
 import time
 import warnings
 from pathlib import Path
+import threading
 
 import numpy as np
 import torch
+
+# Livekit imports
+import asyncio
+from livekit import rtc
+
 
 from lerobot.common.robot_devices.cameras.utils import make_cameras_from_configs
 from lerobot.common.robot_devices.motors.utils import MotorsBus, make_motors_buses_from_configs
@@ -166,6 +172,12 @@ class ManipulatorRobot:
         self.cameras = make_cameras_from_configs(self.config.cameras)
         self.is_connected = False
         self.logs = {}
+        # Livekit room connection (for teleop leader)
+        self.livekit_room = None
+        self._livekit_loop = None
+        self._livekit_thread = None
+        self.is_teleop_leader = getattr(self.config, "is_teleop_leader", False)
+        self.is_teleop_follower = getattr(self.config, "is_teleop_follower", False)
 
     def get_motor_names(self, arm: dict[str, MotorsBus]) -> list:
         return [f"{arm}_{motor}" for arm, bus in arm.items() for motor in bus.motors]
@@ -243,8 +255,12 @@ class ManipulatorRobot:
 
         if self.robot_type in ["koch", "koch_bimanual", "aloha"]:
             from lerobot.common.robot_devices.motors.dynamixel import TorqueMode
-        elif self.robot_type in ["so100", "so101", "moss", "lekiwi"]:
+        elif self.robot_type in ["so100", "so101", "moss", "lekiwi", "so100bimanual", "so100bimanual_teleop_follower", "so100bimanual_teleop_leader"]:
             from lerobot.common.robot_devices.motors.feetech import TorqueMode
+
+        # Log available arms for debugging
+        if self.is_teleop_follower:
+            logging.info(f"Teleop follower has arms: {list(self.follower_arms.keys())}")
 
         # We assume that at connection time, arms are in a rest position, and torque can
         # be safely disabled to run calibration and/or set robot preset configurations.
@@ -291,6 +307,180 @@ class ManipulatorRobot:
 
         self.is_connected = True
 
+        # Livekit connection for teleop leader
+        if self.is_teleop_leader and rtc is not None:
+            url = getattr(self.config, "livekit_url", None)
+            token = getattr(self.config, "livekit_token", None)
+            if url and token:
+                try:
+                    self._livekit_loop = asyncio.new_event_loop()
+                    def run_loop(loop):
+                        asyncio.set_event_loop(loop)
+                        loop.run_forever()
+                    self._livekit_thread = threading.Thread(target=run_loop, args=(self._livekit_loop,), daemon=True)
+                    self._livekit_thread.start()
+                    # Connect to Livekit room in the new loop
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._livekit_connect(url, token), self._livekit_loop
+                    )
+                    fut.result(timeout=10)
+                    logging.info(f"Connected to Livekit room at {url}")
+                except Exception as e:
+                    logging.error(f"Failed to connect to Livekit: {e}")
+                    self.livekit_room = None
+            else:
+                logging.warning("Livekit URL or token not provided in config; skipping Livekit connection.")
+        # Livekit connection for teleop follower
+        elif self.is_teleop_follower and rtc is not None:
+            url = getattr(self.config, "livekit_url", None)
+            token = getattr(self.config, "livekit_token", None)
+            if url and token:
+                try:
+                    self._livekit_loop = asyncio.new_event_loop()
+                    def run_loop(loop):
+                        asyncio.set_event_loop(loop)
+                        loop.run_forever()
+                    self._livekit_thread = threading.Thread(target=run_loop, args=(self._livekit_loop,), daemon=True)
+                    self._livekit_thread.start()
+                    
+                    # Connect to Livekit room in the new loop
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._livekit_connect_follower(url, token), self._livekit_loop
+                    )
+                    fut.result(timeout=10)
+                    logging.info(f"Connected to Livekit room at {url} as teleop follower")
+                except Exception as e:
+                    logging.error(f"Failed to connect to Livekit as follower: {e}")
+                    self.livekit_room = None
+            else:
+                logging.warning("Livekit URL or token not provided in config; skipping Livekit connection.")
+
+    async def _livekit_connect(self, url, token):
+        self.livekit_room = rtc.Room(loop=self._livekit_loop)
+        await self.livekit_room.connect(url, token)
+
+    async def _livekit_connect_follower(self, url, token):
+        self.livekit_room = rtc.Room(loop=self._livekit_loop)
+        
+        # Handle incoming data packets from leader - using a synchronous callback
+        @self.livekit_room.on("data_received")
+        def on_data_received(data: rtc.DataPacket):
+            if data.topic == "leader_arm_positions":
+                # Decode and parse the data
+                decoded_data = data.data.decode('utf-8')
+                
+                # Try to parse as JSON
+                try:
+                    json_data = json.loads(decoded_data)
+                    print(f"Received data from leader: {json_data}")
+                    # Use run_coroutine_threadsafe to run the async function in the event loop
+                    asyncio.run_coroutine_threadsafe(
+                        self._process_leader_data(json_data), 
+                        self._livekit_loop
+                    )
+                except json.JSONDecodeError as e:
+                    logging.error(f"JSON decode error: {e} - Raw data: {decoded_data[:100]}")
+                except Exception as e:
+                    logging.error(f"Error processing received data: {e}", exc_info=True)
+        
+        # Connect to the room
+        await self.livekit_room.connect(url, token)
+        logging.info("Teleop follower connected and listening for leader positions")
+    
+    async def _process_leader_data(self, message):
+        """Process leader data asynchronously
+        
+        Args:
+            message: The already parsed JSON message data
+        """
+        try:
+            # Print message info for debugging
+            logging.debug(f"Processing message with keys: {list(message.keys())}")
+            
+            if "leader_arm_positions" in message:
+                leader_positions = message["leader_arm_positions"]
+                logging.debug(f"Received leader positions keys: {list(leader_positions.keys())}")
+                
+                # Process each arm position
+                for leader_name, positions in leader_positions.items():
+                    # Map leader arm name to follower arm name if needed
+                    follower_name = self._map_leader_to_follower_name(leader_name)
+                    
+                    # Check if we have valid position data
+                    if not positions:
+                        logging.warning(f"Received empty positions for {leader_name}")
+                        continue
+                        
+                    # Show position data info for debugging
+                    if isinstance(positions, list):
+                        preview = positions[:3] if len(positions) > 3 else positions
+                        logging.debug(f"Processing leader arm {leader_name} -> follower arm {follower_name}, positions (list len={len(positions)}): {preview}...")
+                    else:
+                        logging.debug(f"Processing leader arm {leader_name} -> follower arm {follower_name}, positions (type={type(positions)}): {positions}")
+                    
+                    if follower_name in self.follower_arms:
+                        try:
+                            # Make sure positions is a list or appropriate structure
+                            if not isinstance(positions, (list, tuple, np.ndarray)):
+                                logging.error(f"Expected positions to be a list/array, got {type(positions)}")
+                                continue
+                            
+                            # Check if the position data has the expected length
+                            expected_length = len(self.follower_arms[follower_name].motor_names)
+                            if len(positions) != expected_length:
+                                logging.error(f"Position length mismatch: got {len(positions)}, expected {expected_length} for arm {follower_name}")
+                                continue
+                                
+                            # Convert list to tensor and send to follower arm
+                            goal_pos = torch.tensor(positions, dtype=torch.float32)
+                            # Execute actions on the follower arm
+                            self.write_goal_position_to_follower(follower_name, goal_pos)
+                            logging.debug(f"Applied positions to follower arm: {follower_name}")
+                        except Exception as e:
+                            logging.error(f"Error applying positions to follower arm {follower_name}: {e}", exc_info=True)
+                    else:
+                        logging.warning(f"Received positions for unknown arm: {leader_name} -> {follower_name}")
+            else:
+                logging.warning(f"Received message without leader_arm_positions key: {list(message.keys())}")
+        except Exception as e:
+            logging.error(f"Unexpected error processing leader arm positions: {e}", exc_info=True)
+
+    def _map_leader_to_follower_name(self, leader_name):
+        """Map a leader arm name to the corresponding follower arm name.
+        This is needed because the leader and follower might use different naming conventions.
+        
+        In most cases, the names will be the same, but this allows for custom mapping if needed.
+        """
+        # Check if we need to map the name (for example, if leader arms have different names than follower arms)
+        # For now, just return the same name
+        return leader_name
+
+    def write_goal_position_to_follower(self, name, goal_pos):
+        """Write goal position to a follower arm.
+        
+        Args:
+            name: Name of the follower arm
+            goal_pos: Position to set
+            
+        Returns:
+            The goal position that was actually sent (which may be clamped)
+        """
+        before_fwrite_t = time.perf_counter()
+        
+        # Cap goal position when too far away from present position.
+        # Slower fps expected due to reading from the follower.
+        if self.config.max_relative_target is not None:
+            present_pos = self.follower_arms[name].read("Present_Position")
+            present_pos = torch.from_numpy(present_pos)
+            goal_pos = ensure_safe_goal_position(goal_pos, present_pos, self.config.max_relative_target)
+        
+        # Convert to numpy and write to motor
+        goal_pos_np = goal_pos.numpy().astype(np.float32)
+        self.follower_arms[name].write("Goal_Position", goal_pos_np)
+        
+        self.logs[f"write_follower_{name}_goal_pos_dt_s"] = time.perf_counter() - before_fwrite_t
+        return goal_pos
+
     def activate_calibration(self):
         """After calibration all motors function in human interpretable ranges.
         Rotations are expressed in degrees in nominal range of [-180, 180],
@@ -313,7 +503,7 @@ class ManipulatorRobot:
 
                     calibration = run_arm_calibration(arm, self.robot_type, name, arm_type)
 
-                elif self.robot_type in ["so100", "so101", "moss", "lekiwi"]:
+                elif self.robot_type in ["so100", "so101", "moss", "lekiwi", "so100bimanual", "so100bimanual_teleop_follower", "so100bimanual_teleop_leader"]:
                     from lerobot.common.robot_devices.robots.feetech_calibration import (
                         run_arm_manual_calibration,
                     )
@@ -450,6 +640,13 @@ class ManipulatorRobot:
                 "ManipulatorRobot is not connected. You need to run `robot.connect()`."
             )
 
+        # For teleop follower, we don't need to do the regular teleop as commands are received via Livekit
+        if self.is_teleop_follower:
+            # Just return empty data - the actual position updates happen in the Livekit callback
+            if record_data:
+                return {}, {}
+            return None
+
         # Prepare to assign the position of the leader to the follower
         leader_pos = {}
         for name in self.leader_arms:
@@ -458,30 +655,48 @@ class ManipulatorRobot:
             leader_pos[name] = torch.from_numpy(leader_pos[name])
             self.logs[f"read_leader_{name}_pos_dt_s"] = time.perf_counter() - before_lread_t
 
+        # Livekit publish (if teleop leader)
+        if self.is_teleop_leader and self.livekit_room is not None:
+            try:
+                leader_flat = {k: v.tolist() for k, v in leader_pos.items()}
+                data = json.dumps({"leader_arm_positions": leader_flat}).encode("utf-8")
+                async def send_packet():
+                    await self.livekit_room.local_participant.publish_data(
+                        data, reliable=False, topic="leader_arm_positions"
+                    )
+                    print(f"Publishing leader arm positions to Livekit: {data}")
+                if self._livekit_loop:
+                    asyncio.run_coroutine_threadsafe(send_packet(), self._livekit_loop)
+            except Exception as e:
+                logging.error(f"Failed to publish leader arm positions to Livekit: {e}")
+
         # Send goal position to the follower
         follower_goal_pos = {}
-        for name in self.follower_arms:
-            before_fwrite_t = time.perf_counter()
-            goal_pos = leader_pos[name]
+        # Normal local teleop (not follower)
+        if not self.is_teleop_follower:
+            for name in self.follower_arms:
+                before_fwrite_t = time.perf_counter()
+                goal_pos = leader_pos[name]
+                # Cap goal position when too far away from present position.
+                # Slower fps expected due to reading from the follower.
+                if self.config.max_relative_target is not None:
+                    present_pos = self.follower_arms[name].read("Present_Position")
+                    present_pos = torch.from_numpy(present_pos)
+                    goal_pos = ensure_safe_goal_position(goal_pos, present_pos, self.config.max_relative_target)
 
-            # Cap goal position when too far away from present position.
-            # Slower fps expected due to reading from the follower.
-            if self.config.max_relative_target is not None:
-                present_pos = self.follower_arms[name].read("Present_Position")
-                present_pos = torch.from_numpy(present_pos)
-                goal_pos = ensure_safe_goal_position(goal_pos, present_pos, self.config.max_relative_target)
+                # Used when record_data=True
+                follower_goal_pos[name] = goal_pos
 
-            # Used when record_data=True
-            follower_goal_pos[name] = goal_pos
+                goal_pos = goal_pos.numpy().astype(np.float32)
+                self.follower_arms[name].write("Goal_Position", goal_pos)
+                self.logs[f"write_follower_{name}_goal_pos_dt_s"] = time.perf_counter() - before_fwrite_t
 
-            goal_pos = goal_pos.numpy().astype(np.float32)
-            self.follower_arms[name].write("Goal_Position", goal_pos)
-            self.logs[f"write_follower_{name}_goal_pos_dt_s"] = time.perf_counter() - before_fwrite_t
-
+        return {}, {}
+    
         # Early exit when recording data is not requested
         if not record_data:
-            return
-
+            return None
+        
         # TODO(rcadene): Add velocity and other info
         # Read follower position
         follower_pos = {}
@@ -620,6 +835,19 @@ class ManipulatorRobot:
         for name in self.cameras:
             self.cameras[name].disconnect()
 
+        # Livekit cleanup
+        if (self.is_teleop_leader or self.is_teleop_follower) and self.livekit_room is not None and self._livekit_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(self.livekit_room.disconnect(), self._livekit_loop)
+                fut.result(timeout=5)
+            except Exception as e:
+                logging.error(f"Error disconnecting Livekit room: {e}")
+            self.livekit_room = None
+            self._livekit_loop.call_soon_threadsafe(self._livekit_loop.stop)
+            if self._livekit_thread is not None:
+                self._livekit_thread.join(timeout=2)
+            self._livekit_loop = None
+            self._livekit_thread = None
         self.is_connected = False
 
     def __del__(self):
