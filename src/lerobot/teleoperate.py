@@ -82,6 +82,7 @@ from lerobot.teleoperators import (  # noqa: F401
     so100_leader,
     so101_leader,
 )
+from lerobot.teleoperators.remote_teleoperator import RemoteTeleoperator
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import init_logging, move_cursor_up
 from lerobot.utils.visualization_utils import _init_rerun, log_rerun_data
@@ -112,6 +113,12 @@ def teleop_loop(
             log_rerun_data(observation, action)
 
         robot.send_action(action)
+        
+            # if teleop is a RemoteTeleoperator, send the observations to the remote teleoperator
+        if isinstance(teleop, RemoteTeleoperator):
+            observation = robot.get_observation()
+            teleop.publish_observation(observation)
+            
         dt_s = time.perf_counter() - loop_start
         busy_wait(1 / fps - dt_s)
 
