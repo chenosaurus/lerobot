@@ -73,6 +73,17 @@ class _LeKiwiRemoteHostHandler(LiveKitServiceHandler):
 
     def on_connected(self) -> None:
         try:
+            logger.info("LiveKit connected; attempting to publish any pending video tracks")
+            room = getattr(self.host._livekit, "room", None)
+            if room is None:
+                logger.warning("LiveKit connected callback fired, but room is None")
+            else:
+                lp = getattr(room, "local_participant", None)
+                logger.info(
+                    "LiveKit room ready: local_participant=%s, remote_participants=%d",
+                    bool(lp),
+                    len(getattr(room, "remote_participants", {})),
+                )
             self.host._on_livekit_connected()
         except Exception as e:
             logger.error(f"Error handling LiveKit on_connected: {e}")
@@ -121,7 +132,13 @@ class LeKiwiRemoteHost:
 
     # ----- LiveKit control plane -----
     def connect(self) -> None:
+        logger.info("Connecting to LiveKit server ...")
         self._livekit.connect(timeout=10.0)
+        logger.info(
+            "LiveKit connect() returned; is_connected=%s, room=%s",
+            self._livekit.is_connected,
+            bool(self._livekit.room),
+        )
 
     def disconnect(self) -> None:
         with contextlib.suppress(RuntimeError):
@@ -136,11 +153,19 @@ class LeKiwiRemoteHost:
     # ----- Video publishing -----
     def _ensure_video_track(self, camera_name: str, width: int, height: int) -> None:
         if camera_name not in self._video_tracks:
+            logger.info(
+                "Creating video track '%s' with resolution %dx%d",
+                camera_name,
+                width,
+                height,
+            )
             source = rtc.VideoSource(width, height)
             track = rtc.LocalVideoTrack.create_video_track(f"camera_{camera_name}", source)
             self._video_sources[camera_name] = source
             self._video_tracks[camera_name] = track
             logger.info(f"Created video track '{camera_name}'")
+        else:
+            logger.debug("Video track '%s' already exists", camera_name)
 
         # Try publishing now (safe to call repeatedly)
         self._maybe_publish_track(camera_name)
@@ -175,12 +200,34 @@ class LeKiwiRemoteHost:
                     logger.error(f"Failed to publish track '{camera_name}': {e}")
 
             future.add_done_callback(_done)
+        else:
+            if camera_name in self._published_tracks:
+                logger.debug("Track '%s' already published", camera_name)
+            elif camera_name not in self._video_tracks:
+                logger.debug("Track '%s' not created yet", camera_name)
+            else:
+                room = self._livekit.room
+                if room is None:
+                    logger.info("Cannot publish '%s': LiveKit room not ready", camera_name)
+                elif room.local_participant is None:
+                    logger.info("Cannot publish '%s': local_participant not ready", camera_name)
+                elif self._livekit._event_loop is None:
+                    logger.info("Cannot publish '%s': event loop not available", camera_name)
 
     def _on_livekit_connected(self) -> None:
         for cam_name in list(self._video_tracks.keys()):
             self._maybe_publish_track(cam_name)
 
     def _publish_frame(self, camera_name: str, frame: np.ndarray) -> None:
+        if frame is None:
+            logger.warning("Frame for '%s' is None; skipping", camera_name)
+            return
+        logger.debug(
+            "Publishing frame for '%s' with shape=%s dtype=%s",
+            camera_name,
+            getattr(frame, "shape", None),
+            getattr(frame, "dtype", None),
+        )
         if frame.dtype != np.uint8:
             if frame.max() <= 1.0:
                 frame = (frame * 255).astype(np.uint8)
@@ -190,6 +237,9 @@ class LeKiwiRemoteHost:
         h, w = frame.shape[:2]
         self._ensure_video_track(camera_name, w, h)
 
+        if frame.ndim != 3:
+            logger.warning(f"Frame for camera {camera_name} is not HxWxC; shape={frame.shape}")
+            return
         if frame.shape[2] == 3:
             rgba = np.zeros((h, w, 4), dtype=np.uint8)
             rgba[:, :, :3] = frame
@@ -204,7 +254,11 @@ class LeKiwiRemoteHost:
             return
 
         vf = rtc.VideoFrame(w, h, buf_type, data)
-        self._video_sources[camera_name].capture_frame(vf)
+        try:
+            self._video_sources[camera_name].capture_frame(vf)
+            logger.debug("Captured frame for '%s' (%dx%d)", camera_name, w, h)
+        except KeyError:
+            logger.error("Video source for '%s' not found when capturing frame", camera_name)
 
     # ----- Main loop -----
     def run(self) -> None:

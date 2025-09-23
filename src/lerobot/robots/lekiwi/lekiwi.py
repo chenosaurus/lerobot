@@ -112,15 +112,21 @@ class LeKiwi(Robot):
         if self.is_connected:
             raise DeviceAlreadyConnectedError(f"{self} already connected")
 
+        logger.info("Connecting motors bus for %s", self)
         self.bus.connect()
         if not self.is_calibrated and calibrate:
             logger.info(
                 "Mismatch between calibration values in the motor and the calibration file or no calibration file found"
             )
             self.calibrate()
-
-        for cam in self.cameras.values():
-            cam.connect()
+        logger.info("Configured cameras: %s", list(self.cameras.keys()))
+        for name, cam in self.cameras.items():
+            try:
+                logger.info("Connecting camera '%s' ...", name)
+                cam.connect()
+                logger.info("Camera '%s' connected: %s x %s @ %s fps", name, cam.width, cam.height, cam.fps)
+            except Exception as e:
+                logger.error("Failed to connect camera '%s': %s", name, e)
 
         self.configure()
         logger.info(f"{self} connected.")
@@ -363,9 +369,18 @@ class LeKiwi(Robot):
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
-            dt_ms = (time.perf_counter() - start) * 1e3
-            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+            try:
+                frame = cam.async_read()
+                obs_dict[cam_key] = frame
+                dt_ms = (time.perf_counter() - start) * 1e3
+                if frame is None:
+                    logger.warning("Camera '%s' returned None frame (%.1f ms)", cam_key, dt_ms)
+                else:
+                    shape = getattr(frame, 'shape', None)
+                    logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms, shape={shape}")
+            except Exception as e:
+                dt_ms = (time.perf_counter() - start) * 1e3
+                logger.error("Error reading camera '%s' after %.1f ms: %s", cam_key, dt_ms, e)
 
         return obs_dict
 
