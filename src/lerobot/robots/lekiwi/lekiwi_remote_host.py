@@ -248,13 +248,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
     if _DOTENV_AVAILABLE:
-        with contextlib.suppress(Exception):
-            repo_root = Path(__file__).resolve().parents[2]
-            env_path = repo_root / ".env"
-            print(env_path)
-            if env_path.exists():
-                load_dotenv(dotenv_path=env_path)
-            
+        env_path = "/home/dc/workspace/lerobot/.env"
+        print(env_path)
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path)
+        
             # load_dotenv()
 
     livekit_url = os.environ.get("LIVEKIT_URL", "")
