@@ -140,11 +140,13 @@ class LeKiwiRemoteHost:
             track = rtc.LocalVideoTrack.create_video_track(f"camera_{camera_name}", source)
             self._video_sources[camera_name] = source
             self._video_tracks[camera_name] = track
+            logger.info(f"Created video track '{camera_name}'")
 
         # Try publishing now (safe to call repeatedly)
         self._maybe_publish_track(camera_name)
 
     def _maybe_publish_track(self, camera_name: str) -> None:
+        logger.info(f"Maybe publish track '{camera_name}'")
         if (
             camera_name in self._video_tracks
             and camera_name not in self._published_tracks
