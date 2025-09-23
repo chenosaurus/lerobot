@@ -21,6 +21,7 @@ from ..config import RobotConfig
 
 
 def lekiwi_cameras_config() -> dict[str, CameraConfig]:
+    return {}
     return {
         "front": OpenCVCameraConfig(
             index_or_path="/dev/video0", fps=30, width=640, height=480, rotation=Cv2Rotation.ROTATE_180
@@ -34,7 +35,7 @@ def lekiwi_cameras_config() -> dict[str, CameraConfig]:
 @RobotConfig.register_subclass("lekiwi")
 @dataclass
 class LeKiwiConfig(RobotConfig):
-    port: str = "/dev/ttyACM0"  # port to connect to the bus
+    port: str = "/dev/tty.usbmodem5A680133271" #"/dev/ttyACM0"  # port to connect to the bus
 
     disable_torque_on_disconnect: bool = True
 
@@ -56,7 +57,7 @@ class LeKiwiHostConfig:
     port_zmq_observations: int = 5556
 
     # Duration of the application
-    connection_time_s: int = 30
+    connection_time_s: int = 3000
 
     # Watchdog: stop the robot if no command is received for over 0.5 seconds.
     watchdog_timeout_ms: int = 500
