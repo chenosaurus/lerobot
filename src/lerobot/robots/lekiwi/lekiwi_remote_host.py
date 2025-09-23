@@ -52,7 +52,7 @@ class LeKiwiRemoteHostConfig:
     """Runtime configuration for the LiveKit host loop (not user-exposed schema)."""
 
     # Duration of the application
-    connection_time_s: int = 30
+    connection_time_s: int = 3000
     # Watchdog: stop the robot if no command is received for over 0.5 seconds.
     watchdog_timeout_ms: int = 500
     # Max host loop frequency
@@ -249,7 +249,13 @@ def main() -> None:
 
     if _DOTENV_AVAILABLE:
         with contextlib.suppress(Exception):
-            load_dotenv()
+            repo_root = Path(__file__).resolve().parents[2]
+            env_path = repo_root / ".env"
+            print(env_path)
+            if env_path.exists():
+                load_dotenv(dotenv_path=env_path)
+            
+            # load_dotenv()
 
     livekit_url = os.environ.get("LIVEKIT_URL", "")
     livekit_token = os.environ.get("LIVEKIT_FOLLOWER_TOKEN", "")
