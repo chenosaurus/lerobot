@@ -280,11 +280,7 @@ def main() -> None:
 
     if _DOTENV_AVAILABLE:
         env_path = "/home/dc/workspace/lerobot/.env"
-        print(env_path)
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path)
-        
-            # load_dotenv()
+        load_dotenv(dotenv_path=env_path)
 
     livekit_url = os.environ.get("LIVEKIT_URL", "")
     livekit_token = os.environ.get("LIVEKIT_FOLLOWER_TOKEN", "")
