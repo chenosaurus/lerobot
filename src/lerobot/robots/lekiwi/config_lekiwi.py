@@ -21,7 +21,6 @@ from ..config import RobotConfig
 
 
 def lekiwi_cameras_config() -> dict[str, CameraConfig]:
-    return {}
     return {
         "front": OpenCVCameraConfig(
             index_or_path="/dev/video0", fps=30, width=640, height=480
@@ -88,7 +87,7 @@ class LeKiwiClientConfig(RobotConfig):
             "speed_down": "f",
             # quit teleop
             "quit": "q",
-        }
+        }rrw
     )
 
     cameras: dict[str, CameraConfig] = field(default_factory=lekiwi_cameras_config)
