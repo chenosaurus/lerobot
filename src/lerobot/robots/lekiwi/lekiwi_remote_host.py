@@ -71,6 +71,12 @@ class _LeKiwiRemoteHostHandler(LiveKitServiceHandler):
         except Exception as e:
             logger.error(f"Error processing data packet: {e}")
 
+    def on_connected(self) -> None:
+        try:
+            self.host._on_livekit_connected()
+        except Exception as e:
+            logger.error(f"Error handling LiveKit on_connected: {e}")
+
 
 class LeKiwiRemoteHost:
     """
@@ -111,6 +117,7 @@ class LeKiwiRemoteHost:
         # Video publishing state
         self._video_sources: dict[str, "rtc.VideoSource"] = {}  # type: ignore[name-defined]
         self._video_tracks: dict[str, "rtc.LocalVideoTrack"] = {}  # type: ignore[name-defined]
+        self._published_tracks: set[str] = set()
 
     # ----- LiveKit control plane -----
     def connect(self) -> None:
@@ -128,24 +135,48 @@ class LeKiwiRemoteHost:
 
     # ----- Video publishing -----
     def _ensure_video_track(self, camera_name: str, width: int, height: int) -> None:
-        if camera_name in self._video_tracks:
-            return
-        source = rtc.VideoSource(width, height)
-        track = rtc.LocalVideoTrack.create_video_track(f"camera_{camera_name}", source)
-        self._video_sources[camera_name] = source
-        self._video_tracks[camera_name] = track
+        if camera_name not in self._video_tracks:
+            source = rtc.VideoSource(width, height)
+            track = rtc.LocalVideoTrack.create_video_track(f"camera_{camera_name}", source)
+            self._video_sources[camera_name] = source
+            self._video_tracks[camera_name] = track
 
-        if self._livekit.room and self._livekit.room.local_participant and self._livekit._event_loop:
+        # Try publishing now (safe to call repeatedly)
+        self._maybe_publish_track(camera_name)
+
+    def _maybe_publish_track(self, camera_name: str) -> None:
+        if (
+            camera_name in self._video_tracks
+            and camera_name not in self._published_tracks
+            and self._livekit.room
+            and self._livekit.room.local_participant
+            and self._livekit._event_loop
+        ):
+            track = self._video_tracks[camera_name]
             options = rtc.TrackPublishOptions(
                 source=rtc.TrackSource.SOURCE_CAMERA,
                 simulcast=True,
                 video_encoding=rtc.VideoEncoding(max_framerate=30, max_bitrate=2_000_000),
                 video_codec=rtc.VideoCodec.H264,
             )
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 self._livekit.room.local_participant.publish_track(track, options),
                 self._livekit._event_loop,
             )
+
+            def _done(f):
+                try:
+                    _ = f.result()
+                    self._published_tracks.add(camera_name)
+                    logger.info(f"Published video track '{camera_name}'")
+                except Exception as e:
+                    logger.error(f"Failed to publish track '{camera_name}': {e}")
+
+            future.add_done_callback(_done)
+
+    def _on_livekit_connected(self) -> None:
+        for cam_name in list(self._video_tracks.keys()):
+            self._maybe_publish_track(cam_name)
 
     def _publish_frame(self, camera_name: str, frame: np.ndarray) -> None:
         if frame.dtype != np.uint8:
