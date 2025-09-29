@@ -437,6 +437,32 @@ class MotorsBus(abc.ABC):
         self.set_timeout()
         logger.debug(f"{self.__class__.__name__} connected.")
 
+    def reset_connection(self, handshake: bool = True) -> bool:
+        """Attempt to recover the serial connection non-fatally.
+
+        This closes and re-opens the port with optional handshake. Returns whether
+        the connection appears open after the operation. Never raises.
+        """
+        try:
+            try:
+                if self.port_handler.is_open:
+                    self.port_handler.closePort()
+            except Exception as e:
+                logger.warning(f"Failed closing port '{self.port}' during reset: {e}")
+
+            # Try to reopen
+            try:
+                self._connect(handshake)
+                self.set_timeout()
+                logger.info(f"{self.__class__.__name__} connection reset on '{self.port}'.")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to reset connection on '{self.port}': {e}")
+                return False
+        except Exception as e:
+            logger.error(f"Unexpected error during connection reset on '{self.port}': {e}")
+            return False
+
     def _connect(self, handshake: bool = True) -> None:
         try:
             if not self.port_handler.openPort():
@@ -467,11 +493,21 @@ class MotorsBus(abc.ABC):
             )
 
         if disable_torque:
-            self.port_handler.clearPort()
-            self.port_handler.is_using = False
-            self.disable_torque(num_retry=5)
+            # Best-effort torque disable: do not crash if communication is flaky during shutdown
+            try:
+                self.port_handler.clearPort()
+                self.port_handler.is_using = False
+                self.disable_torque(num_retry=5)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to disable torque during disconnect on port '{self.port}': {e}. Proceeding to close port."
+                )
 
-        self.port_handler.closePort()
+        # Always try to close the port even if disabling torque failed
+        try:
+            self.port_handler.closePort()
+        except Exception as e:
+            logger.warning(f"Failed to close port '{self.port}': {e}")
         logger.debug(f"{self.__class__.__name__} disconnected.")
 
     @classmethod

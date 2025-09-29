@@ -174,11 +174,20 @@ class SO100Follower(Robot):
 
     def get_observation(self) -> dict[str, Any]:
         if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+            # Try to recover connection automatically
+            if not self.bus.reset_connection():
+                raise DeviceNotConnectedError(f"{self} is not connected.")
 
         # Read arm position
         start = time.perf_counter()
-        obs_dict = self.bus.sync_read("Present_Position")
+        # Increase retries to survive transient transport errors; attempt recovery once
+        try:
+            obs_dict = self.bus.sync_read("Present_Position", num_retry=5)
+        except Exception:
+            if self.bus.reset_connection():
+                obs_dict = self.bus.sync_read("Present_Position", num_retry=5)
+            else:
+                raise
         obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
@@ -213,12 +222,26 @@ class SO100Follower(Robot):
         # Cap goal position when too far away from present position.
         # /!\ Slower fps expected due to reading from the follower.
         if self.config.max_relative_target is not None:
-            present_pos = self.bus.sync_read("Present_Position")
+            # Be resilient when reading present positions for safety clipping
+            try:
+                present_pos = self.bus.sync_read("Present_Position", num_retry=5)
+            except Exception:
+                if self.bus.reset_connection():
+                    present_pos = self.bus.sync_read("Present_Position", num_retry=5)
+                else:
+                    raise
             goal_present_pos = {key: (g_pos, present_pos[key]) for key, g_pos in goal_pos.items()}
             goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
 
         # Send goal position to the arm
-        self.bus.sync_write("Goal_Position", goal_pos)
+        # Use a couple retries on writes to handle occasional missed packets; attempt one recovery
+        try:
+            self.bus.sync_write("Goal_Position", goal_pos, num_retry=2)
+        except Exception:
+            if self.bus.reset_connection():
+                self.bus.sync_write("Goal_Position", goal_pos, num_retry=2)
+            else:
+                raise
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
 
     def disconnect(self):

@@ -52,6 +52,7 @@ lerobot-teleoperate \
 """
 
 import logging
+import contextlib
 import time
 from dataclasses import asdict, dataclass
 from pprint import pformat
@@ -107,33 +108,57 @@ def teleop_loop(
     start = time.perf_counter()
     while True:
         loop_start = time.perf_counter()
-        action = teleop.get_action()
+        try:
+            action = teleop.get_action()
+        except Exception as e:
+            logging.warning(f"Failed to get action from teleoperator: {e}")
+            action = {k: 0.0 for k in robot.action_features}
         if display_data:
-            observation = robot.get_observation()
-            log_rerun_data(observation, action)
+            try:
+                observation = robot.get_observation()
+                log_rerun_data(observation, action)
+            except Exception as e:
+                logging.warning(f"Failed to read observation: {e}")
 
-        robot.send_action(action)
-        
-            # if teleop is a RemoteTeleoperator, send the observations to the remote teleoperator
+        # Only send actions when using a RemoteTeleoperator after it has received control packets.
         if isinstance(teleop, RemoteTeleoperator):
-            observation = robot.get_observation()
-            teleop.publish_observation(observation)
+            if teleop.should_send_actions:
+                try:
+                    robot.send_action(action)
+                except Exception as e:
+                    logging.warning(f"Failed to send action: {e}")
+            # Always publish observations to the remote teleoperator so the leader can connect/monitor.
+            try:
+                observation = robot.get_observation()
+                teleop.publish_observation(observation)
+            except Exception as e:
+                logging.warning(f"Failed to publish observation: {e}")
+        else:
+            try:
+                robot.send_action(action)
+            except Exception as e:
+                logging.warning(f"Failed to send action: {e}")
             
         dt_s = time.perf_counter() - loop_start
         busy_wait(1 / fps - dt_s)
 
         loop_s = time.perf_counter() - loop_start
 
-        print("\n" + "-" * (display_len + 10))
-        print(f"{'NAME':<{display_len}} | {'NORM':>7}")
-        for motor, value in action.items():
-            print(f"{motor:<{display_len}} | {value:>7.2f}")
-        print(f"\ntime: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
+        try:
+            print("\n" + "-" * (display_len + 10))
+            print(f"{'NAME':<{display_len}} | {'NORM':>7}")
+            for motor, value in action.items():
+                print(f"{motor:<{display_len}} | {value:>7.2f}")
+            print(f"\ntime: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
+        except Exception:
+            # Printing should not break the control loop
+            pass
 
         if duration is not None and time.perf_counter() - start >= duration:
             return
 
-        move_cursor_up(len(action) + 5)
+        with contextlib.suppress(Exception):
+            move_cursor_up(len(action) + 5)
 
 
 @draccus.wrap()
@@ -156,8 +181,15 @@ def teleoperate(cfg: TeleoperateConfig):
     finally:
         if cfg.display_data:
             rr.rerun_shutdown()
-        teleop.disconnect()
-        robot.disconnect()
+        # Best-effort disconnects to avoid crashing on teardown
+        try:
+            teleop.disconnect()
+        except Exception as e:
+            logging.warning(f"Failed to disconnect teleop: {e}")
+        try:
+            robot.disconnect()
+        except Exception as e:
+            logging.warning(f"Failed to disconnect robot: {e}")
 
 
 def main():

@@ -57,6 +57,14 @@ class RemoteTeleoperatorHandler(LiveKitServiceHandler):
         except Exception as e:
             logger.error(f"Error processing data packet: {e}")
 
+    def on_participant_disconnected(self, participant: rtc.RemoteParticipant) -> None:
+        """
+        Reset action streaming readiness when the remote participant (leader) disconnects.
+        """
+        super().on_participant_disconnected(participant)
+        # Require a fresh action after disconnect before sending again
+        self.teleoperator._has_received_action = False
+
 
 class RemoteTeleoperator(Teleoperator):
     """
@@ -84,6 +92,7 @@ class RemoteTeleoperator(Teleoperator):
         self._cached_action: dict[str, Any] | None = None
         self._expected_action_shape: dict[str, type] | None = None
         self._action_lock = threading.Lock()
+        self._has_received_action: bool = False
 
         # Video track management for camera observations
         self._video_sources: dict[str, rtc.VideoSource] = {}
@@ -132,11 +141,24 @@ class RemoteTeleoperator(Teleoperator):
             # Cache the latest valid action
             with self._action_lock:
                 self._cached_action = action_data.copy()
+                # Mark that we have received at least one valid action
+                self._has_received_action = True
 
             logger.debug(f"Received valid action: {action_data}")
 
         except Exception as e:
             logger.error(f"Invalid action message received: {e}")
+
+    @property
+    def should_send_actions(self) -> bool:
+        """
+        Whether the follower should send actions to the robot.
+
+        True only after we're connected and we've received at least one action
+        packet from the remote leader. This gates motion until control packets arrive,
+        and automatically holds the last position if the leader disconnects.
+        """
+        return self.is_connected and self._has_received_action
 
     def _validate_action_shape(self, action_data: dict[str, Any]) -> None:
         """
