@@ -65,6 +65,14 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
         from .bi_so100_follower import BiSO100Follower
 
         return BiSO100Follower(config)
+    elif config.type == "tri_so100_follower":
+        from .tri_so100_follower import TriSO100Follower
+
+        return TriSO100Follower(config)
+    elif config.type == "tri_so100_remote_follower":
+        from .tri_so100_follower import TriSO100RemoteFollower
+
+        return TriSO100RemoteFollower(config)
     elif config.type == "reachy2":
         from .reachy2 import Reachy2Robot
 
