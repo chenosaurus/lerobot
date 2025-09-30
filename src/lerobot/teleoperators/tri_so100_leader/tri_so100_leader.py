@@ -39,19 +39,19 @@ class TriSO100Leader(Teleoperator):
         self.config = config
 
         arm1_config = SO100LeaderConfig(
-            id=f"{config.id}_arm1" if config.id else None,
+            id=f"{config.id}1" if config.id else None,
             calibration_dir=config.calibration_dir,
             port=config.arm1_port,
         )
 
         arm2_config = SO100LeaderConfig(
-            id=f"{config.id}_arm2" if config.id else None,
+            id=f"{config.id}2" if config.id else None,
             calibration_dir=config.calibration_dir,
             port=config.arm2_port,
         )
 
         arm3_config = SO100LeaderConfig(
-            id=f"{config.id}_arm3" if config.id else None,
+            id=f"{config.id}3" if config.id else None,
             calibration_dir=config.calibration_dir,
             port=config.arm3_port,
         )
