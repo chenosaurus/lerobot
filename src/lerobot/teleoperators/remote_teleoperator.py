@@ -154,7 +154,7 @@ class RemoteTeleoperator(Teleoperator):
         """
         Whether the follower should send actions to the robot.
 
-        True only after we're connected and we've received at least one action
+        True only after we're connected and we've received at least one action 
         packet from the remote leader. This gates motion until control packets arrive,
         and automatically holds the last position if the leader disconnects.
         """
