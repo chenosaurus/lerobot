@@ -16,7 +16,7 @@
 
 from dataclasses import dataclass
 
-from ..config import TeleoperatorConfig
+from ..config import TeleoperatorConfig, RemoteTeleoperatorConfig
 
 
 @TeleoperatorConfig.register_subclass("bi_so100_leader")
@@ -24,3 +24,9 @@ from ..config import TeleoperatorConfig
 class BiSO100LeaderConfig(TeleoperatorConfig):
     left_arm_port: str
     right_arm_port: str
+
+
+@RemoteTeleoperatorConfig.register_subclass("bi_so100_remote_leader")
+@dataclass
+class BiSO100RemoteLeaderConfig(RemoteTeleoperatorConfig):
+    pass

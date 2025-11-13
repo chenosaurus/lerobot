@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from lerobot.cameras import CameraConfig
 
-from ..config import RobotConfig
+from ..config import RobotConfig, RemoteRobotConfig
 
 
 @RobotConfig.register_subclass("bi_so100_follower")
@@ -37,3 +37,12 @@ class BiSO100FollowerConfig(RobotConfig):
 
     # cameras (shared between both arms)
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+
+
+@RemoteRobotConfig.register_subclass("bi_so100_remote_follower")
+@dataclass
+class BiSO100RemoteFollowerConfig(RemoteRobotConfig):
+    disable_torque_on_disconnect: bool = True
+    max_relative_target: int | None = None
+    cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    use_degrees: bool = False

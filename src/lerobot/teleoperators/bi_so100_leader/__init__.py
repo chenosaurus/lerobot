@@ -15,4 +15,5 @@
 # limitations under the License.
 
 from .bi_so100_leader import BiSO100Leader
-from .config_bi_so100_leader import BiSO100LeaderConfig
+from .bi_so100_remote_leader import BiSO100RemoteLeader
+from .config_bi_so100_leader import BiSO100LeaderConfig, BiSO100RemoteLeaderConfig
